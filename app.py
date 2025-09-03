@@ -4,6 +4,8 @@ from rapidfuzz import process, fuzz
 import io
 import json
 import os
+import numpy as np
+import time
 
 st.set_page_config(page_title="Name Mapper Wizard", layout="wide")
 
@@ -12,9 +14,9 @@ MEMORY_FILE = "corrections.json"
 
 # --- Load or initialize dictionary memory ---
 def load_corrections(file=None):
-    if file:  # If user uploaded dictionary
+    if file:  # User uploaded dictionary
         return json.load(file)
-    elif os.path.exists(MEMORY_FILE):  # Fallback to local memory file
+    elif os.path.exists(MEMORY_FILE):  # Local persisted dictionary
         with open(MEMORY_FILE, "r") as f:
             return json.load(f)
     return {}
@@ -28,7 +30,7 @@ st.markdown(
     """
     <div style="text-align:center; padding:10px; border-radius:12px; background:linear-gradient(90deg,#4facfe,#00f2fe); color:white;">
         <h1>🧙 Name Mapper Wizard</h1>
-        <h3>Your name mapping assistant</h3>
+        <h3>An ML driven tool for cleaning and mapping inconsistent names</h3>
     </div>
     """,
     unsafe_allow_html=True,
@@ -40,12 +42,13 @@ with st.expander("ℹ️ How This App Works"):
         """
         ### 🚀 Features:
         - Upload **Reference File** (correct names) and **Target File** (inconsistent names).
-        - Smart **fuzzy matching** with guaranteed accuracy ≥ **80%**.
+        - Ultra-fast **fuzzy matching** optimized with `cdist` (parallelized across CPU cores).
+        - Guaranteed accuracy ≥ **80%**.
         - **Confidence threshold slider** to filter low-quality matches.
         - **Persistent dictionary memory**:
-            - Upload existing dictionary JSON (optional).
+            - Upload an existing dictionary JSON (optional).
             - After corrections, download the updated dictionary JSON.
-            - Bring it back next time for smarter auto-mapping.
+            - Use it in future runs to improve speed & accuracy.
         - Export final results as **CSV** or **Excel**.
         - Clean, interactive, and production-ready UI.
 
@@ -56,14 +59,15 @@ with st.expander("ℹ️ How This App Works"):
 # --- Sidebar Upload Section ---
 st.sidebar.header("📂 Upload Files")
 
-# Dictionary Upload (optional)
-dict_upload = st.sidebar.file_uploader("Upload Correction Dictionary (JSON, optional)", type=["json"])
+# Upload reference file first
+ref_file = st.sidebar.file_uploader("Upload Reference File (Correct Names)", type=["csv", "xlsx"])
+target_file = st.sidebar.file_uploader("Upload Target File (Inconsistent Names)", type=["csv", "xlsx"])
+
+# Optional JSON dictionary upload (placed after both CSV/Excel uploads)
+dict_upload = st.sidebar.file_uploader("Optional: Upload Correction Dictionary (JSON)", type=["json"])
 
 # Load corrections
 corrections = load_corrections(dict_upload)
-
-ref_file = st.sidebar.file_uploader("Upload Reference File (Correct Names)", type=["csv", "xlsx"])
-target_file = st.sidebar.file_uploader("Upload Target File (Inconsistent Names)", type=["csv", "xlsx"])
 
 # --- Confidence Threshold ---
 threshold = st.sidebar.slider(
@@ -79,6 +83,40 @@ def load_file(file):
     else:
         return pd.read_excel(file)
 
+# --- Optimized Mapping Function ---
+def optimized_mapping(ref_names, target_names, corrections):
+    # Pre-normalize
+    ref_names = [str(x).strip().lower() for x in ref_names]
+    target_names = [str(x).strip().lower() for x in target_names]
+
+    matches = []
+    to_match = []
+
+    # First apply dictionary memory
+    for name in target_names:
+        if name in corrections:
+            matches.append([name, corrections[name], 100])
+        else:
+            to_match.append(name)
+
+    # Use cdist for the remaining names
+    if to_match:
+        scores = process.cdist(
+            to_match, ref_names, scorer=fuzz.WRatio,
+            score_cutoff=80, workers=-1  # parallel across CPU cores
+        )
+
+        best_idx = scores.argmax(axis=1)
+        best_scores = scores.max(axis=1)
+
+        for name, idx, score in zip(to_match, best_idx, best_scores):
+            if score < 80:  # enforce hard min
+                matches.append([name, "⚠️ REVIEW REQUIRED", int(score)])
+            else:
+                matches.append([name, ref_names[idx], int(score)])
+
+    return pd.DataFrame(matches, columns=["Original Name", "Mapped Name", "Confidence"])
+
 # --- Run mapping when files uploaded ---
 if ref_file and target_file:
     ref_df = load_file(ref_file)
@@ -92,20 +130,15 @@ if ref_file and target_file:
         ref_names = ref_df[ref_col].dropna().astype(str).tolist()
         target_names = target_df[target_col].dropna().astype(str).tolist()
 
-        matches = []
-        for name in target_names:
-            if name in corrections:  # Auto apply from memory
-                best_match, score = corrections[name], 100
-            else:
-                best_match, score, _ = process.extractOne(
-                    name, ref_names, scorer=fuzz.WRatio
-                )
-                if score < 80:  # Enforce hard minimum
-                    best_match, score = "⚠️ REVIEW REQUIRED", score
-            matches.append([name, best_match, score])
+        # Progress indicator
+        progress = st.progress(0, text="🔄 Processing name mappings...")
 
-        results_df = pd.DataFrame(matches, columns=["Original Name", "Mapped Name", "Confidence"])
-        st.success("✅ Mapping completed!")
+        # Simulate step updates
+        progress.progress(20, text="⚡ Optimizing with cdist...")
+        results_df = optimized_mapping(ref_names, target_names, corrections)
+        progress.progress(70, text="📊 Preparing results...")
+        time.sleep(0.5)
+        progress.progress(100, text="✅ Mapping completed!")
 
         # --- Separate High vs Low Confidence ---
         low_conf_df = results_df[results_df["Confidence"] < threshold]
