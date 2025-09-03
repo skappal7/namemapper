@@ -28,7 +28,7 @@ st.markdown(
     """
     <div style="text-align:center; padding:10px; border-radius:12px; background:linear-gradient(90deg,#4facfe,#00f2fe); color:white;">
         <h1>🧙 Name Mapper Wizard</h1>
-        <h3>Your AI-powered assistant for cleaning and mapping inconsistent names</h3>
+        <h3>Your name mapping assistant</h3>
     </div>
     """,
     unsafe_allow_html=True,
