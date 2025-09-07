@@ -484,7 +484,7 @@ st.markdown("---")
 st.markdown(
     """
     <div style="text-align: center; padding: 20px; color: #666;">
-        <h4>🚀 Match and Clean Names wth Preceision</h4>
+        <h4>🚀 Match and Clean Names wth Precision</h4>
         <p>Developed by <strong>CE Innovations Lab 2025</strong></p>
         <p><em>Optimized for enterprise-scale data processing</em></p>
     </div>
