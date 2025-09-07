@@ -1,5 +1,18 @@
-streamlit>=1.36.0
-pandas>=2.1.0
-openpyxl>=3.1.2
+# Core dependencies
+streamlit>=1.28.0
+pandas>=2.0.0
+numpy>=1.24.0
+
+# File processing
+pyarrow>=12.0.0
+openpyxl>=3.1.0
 xlsxwriter>=3.1.0
-rapidfuzz>=3.9.0
+
+# Fuzzy matching
+rapidfuzz>=3.0.0
+
+# System utilities
+typing-extensions>=4.5.0
+
+# Optional: For better performance
+numba>=0.57.0
