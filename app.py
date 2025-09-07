@@ -156,67 +156,56 @@ def batch_fuzzy_match(target_batch: List[str], ref_names: List[str],
 def parallel_mapping(target_names: List[str], ref_names: List[str], 
                     corrections: Dict[str, str], threshold: int = 80,
                     max_workers: int = 4) -> pd.DataFrame:
-    """Ultra-fast parallel processing with real-time updates"""
+    """Simplified parallel processing - reliable and fast"""
     
-    # Limit reference names for faster matching (top 10k most common)
-    if len(ref_names) > 10000:
-        ref_names = list(dict.fromkeys(ref_names))[:10000]
-        st.warning(f"🔧 Using top 10,000 reference names for optimal performance")
+    # Limit reference names for faster matching
+    if len(ref_names) > 5000:
+        ref_names = list(dict.fromkeys(ref_names))[:5000]
+        st.info(f"🔧 Using top 5,000 reference names for optimal speed")
     
-    # Split target names into smaller batches for better progress tracking
-    batches = [target_names[i:i + CHUNK_SIZE] for i in range(0, len(target_names), CHUNK_SIZE)]
+    # Smaller batches for better progress
+    batch_size = min(1000, len(target_names) // 10)  # Dynamic batch size
+    batches = [target_names[i:i + batch_size] for i in range(0, len(target_names), batch_size)]
     
     all_results = []
-    progress_bar = st.progress(0, text="🔄 Starting parallel processing...")
-    status_text = st.empty()
+    progress_bar = st.progress(0)
+    status = st.empty()
     
-    # Use optimal worker count
-    optimal_workers = min(max_workers, len(batches), os.cpu_count() or 4)
+    # Process batches sequentially first (to avoid threading issues)
+    start_time = time.time()
     
-    with ThreadPoolExecutor(max_workers=optimal_workers) as executor:
-        # Submit all batches
-        future_to_batch = {
-            executor.submit(batch_fuzzy_match, batch, ref_names, corrections, threshold): i 
-            for i, batch in enumerate(batches)
-        }
-        
-        completed = 0
-        total_batches = len(batches)
-        start_time = time.time()
-        
-        # Process results as they complete
-        for future in future_to_batch:
-            try:
-                batch_idx = future_to_batch[future]
-                batch_results = future.result(timeout=30)  # 30 second timeout per batch
-                all_results.extend(batch_results)
-                
-                completed += 1
-                
-                # Calculate progress and ETA
-                progress = min(95, int(completed / total_batches * 90))
-                elapsed = time.time() - start_time
-                eta = (elapsed / completed * (total_batches - completed)) if completed > 0 else 0
-                
-                # Update progress
-                progress_bar.progress(progress, text=f"📊 Processing batch {completed}/{total_batches}")
-                status_text.text(f"⚡ Processed {completed * CHUNK_SIZE:,} names | ETA: {eta:.0f}s")
-                
-            except Exception as e:
-                logger.error(f"Error in batch {batch_idx}: {e}")
-                st.error(f"⚠️ Error processing batch {batch_idx}: {e}")
-                # Continue with other batches
-                completed += 1
+    for i, batch in enumerate(batches):
+        try:
+            # Process each batch
+            status.text(f"🔄 Processing batch {i+1}/{len(batches)} ({len(batch)} names)...")
+            
+            batch_results = batch_fuzzy_match(batch, ref_names, corrections, threshold)
+            all_results.extend(batch_results)
+            
+            # Update progress
+            progress = int((i + 1) / len(batches) * 100)
+            progress_bar.progress(progress)
+            
+            # Show speed info
+            elapsed = time.time() - start_time
+            rate = len(all_results) / elapsed if elapsed > 0 else 0
+            eta = (len(target_names) - len(all_results)) / rate if rate > 0 else 0
+            
+            status.text(f"✅ Processed {len(all_results):,}/{len(target_names):,} | Speed: {rate:.0f}/sec | ETA: {eta:.0f}s")
+            
+        except Exception as e:
+            logger.error(f"Error in batch {i}: {e}")
+            status.error(f"Error in batch {i}: {str(e)}")
+            # Continue with next batch
+            continue
     
-    progress_bar.progress(100, text="✅ Processing completed!")
-    status_text.text(f"🎉 Successfully processed {len(all_results):,} names in {time.time() - start_time:.1f}s")
+    status.success(f"🎉 Completed {len(all_results):,} names in {time.time() - start_time:.1f} seconds!")
     
     # Convert to DataFrame
     if not all_results:
         return pd.DataFrame(columns=["Original Name", "Mapped Name", "Confidence"])
     
-    df = pd.DataFrame(all_results, columns=["Original Name", "Mapped Name", "Confidence"])
-    return df
+    return pd.DataFrame(all_results, columns=["Original Name", "Mapped Name", "Confidence"])
 
 # UI Header
 st.markdown(
@@ -495,7 +484,7 @@ st.markdown("---")
 st.markdown(
     """
     <div style="text-align: center; padding: 20px; color: #666;">
-        <h4>🚀 Name Mapper</h4>
+        <h4>🚀 Production-Grade Name Mapper</h4>
         <p>Developed by <strong>CE Innovations Lab 2025</strong></p>
         <p><em>Optimized for enterprise-scale data processing</em></p>
     </div>
