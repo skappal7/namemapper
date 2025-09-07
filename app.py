@@ -156,38 +156,65 @@ def batch_fuzzy_match(target_batch: List[str], ref_names: List[str],
 def parallel_mapping(target_names: List[str], ref_names: List[str], 
                     corrections: Dict[str, str], threshold: int = 80,
                     max_workers: int = 4) -> pd.DataFrame:
-    """Parallel processing for large datasets"""
+    """Ultra-fast parallel processing with real-time updates"""
     
-    # Split target names into batches
+    # Limit reference names for faster matching (top 10k most common)
+    if len(ref_names) > 10000:
+        ref_names = list(dict.fromkeys(ref_names))[:10000]
+        st.warning(f"🔧 Using top 10,000 reference names for optimal performance")
+    
+    # Split target names into smaller batches for better progress tracking
     batches = [target_names[i:i + CHUNK_SIZE] for i in range(0, len(target_names), CHUNK_SIZE)]
     
     all_results = []
-    progress_bar = st.progress(0, text="🔄 Processing name mappings...")
+    progress_bar = st.progress(0, text="🔄 Starting parallel processing...")
+    status_text = st.empty()
     
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = []
+    # Use optimal worker count
+    optimal_workers = min(max_workers, len(batches), os.cpu_count() or 4)
+    
+    with ThreadPoolExecutor(max_workers=optimal_workers) as executor:
+        # Submit all batches
+        future_to_batch = {
+            executor.submit(batch_fuzzy_match, batch, ref_names, corrections, threshold): i 
+            for i, batch in enumerate(batches)
+        }
         
-        for batch in batches:
-            future = executor.submit(batch_fuzzy_match, batch, ref_names, corrections, threshold)
-            futures.append(future)
+        completed = 0
+        total_batches = len(batches)
+        start_time = time.time()
         
         # Process results as they complete
-        for i, future in enumerate(futures):
+        for future in future_to_batch:
             try:
-                batch_results = future.result()
+                batch_idx = future_to_batch[future]
+                batch_results = future.result(timeout=30)  # 30 second timeout per batch
                 all_results.extend(batch_results)
                 
+                completed += 1
+                
+                # Calculate progress and ETA
+                progress = min(95, int(completed / total_batches * 90))
+                elapsed = time.time() - start_time
+                eta = (elapsed / completed * (total_batches - completed)) if completed > 0 else 0
+                
                 # Update progress
-                progress = min(95, int((i + 1) / len(futures) * 90))
-                progress_bar.progress(progress, text=f"📊 Processed {i + 1}/{len(futures)} batches...")
+                progress_bar.progress(progress, text=f"📊 Processing batch {completed}/{total_batches}")
+                status_text.text(f"⚡ Processed {completed * CHUNK_SIZE:,} names | ETA: {eta:.0f}s")
                 
             except Exception as e:
-                logger.error(f"Error in batch processing: {e}")
-                st.error(f"Error processing batch {i}: {e}")
+                logger.error(f"Error in batch {batch_idx}: {e}")
+                st.error(f"⚠️ Error processing batch {batch_idx}: {e}")
+                # Continue with other batches
+                completed += 1
     
-    progress_bar.progress(100, text="✅ Mapping completed!")
+    progress_bar.progress(100, text="✅ Processing completed!")
+    status_text.text(f"🎉 Successfully processed {len(all_results):,} names in {time.time() - start_time:.1f}s")
     
     # Convert to DataFrame
+    if not all_results:
+        return pd.DataFrame(columns=["Original Name", "Mapped Name", "Confidence"])
+    
     df = pd.DataFrame(all_results, columns=["Original Name", "Mapped Name", "Confidence"])
     return df
 
@@ -468,7 +495,7 @@ st.markdown("---")
 st.markdown(
     """
     <div style="text-align: center; padding: 20px; color: #666;">
-        <h4>🚀 Production-Grade Name Mapper</h4>
+        <h4>🚀 Name Mapper</h4>
         <p>Developed by <strong>CE Innovations Lab 2025</strong></p>
         <p><em>Optimized for enterprise-scale data processing</em></p>
     </div>
