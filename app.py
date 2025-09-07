@@ -214,8 +214,8 @@ st.markdown(
                 background:linear-gradient(135deg,#667eea,#764ba2); 
                 color:white; margin-bottom:20px; box-shadow:0 4px 15px rgba(0,0,0,0.1);">
         <h1>🧙‍♂️ Name Mapper Wizard Pro</h1>
-        <h3>Production-grade ML tool for cleaning and mapping inconsistent names</h3>
-        <p><em>Now with Parquet optimization for lightning-fast processing</em></p>
+        <h3>Machine Learning Tool for Cleaning and Mapping Inconsistent Names</h3>
+        <p><em>Uses Parquet Optimization for Lightning-Fast Processing</em></p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -234,9 +234,9 @@ with st.expander("ℹ️ How This App Works", expanded=False):
         - **Production Ready**: Optimized for large datasets and enterprise use
 
         ### 📊 Performance Benchmarks:
-        - **Small files** (<10K records): < 5 seconds
-        - **Medium files** (10K-100K): < 30 seconds  
-        - **Large files** (100K-1M): < 5 minutes
+        - **Small files** (<10K records): < 1 Minute
+        - **Medium files** (10K-100K): < 2 Minutes  
+        - **Large files** (100K-1M): < 15 Minutes
         
         ⚡ *Pro Tip*: Upload your correction dictionary to boost accuracy by 25%!
         """
