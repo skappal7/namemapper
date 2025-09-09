@@ -153,34 +153,43 @@ def batch_fuzzy_match(target_batch: List[str], ref_names: List[str],
     
     return results
 
-def parallel_mapping(target_names: List[str], ref_names: List[str], 
-                    corrections: Dict[str, str], threshold: int = 80,
-                    max_workers: int = 4) -> pd.DataFrame:
-    """Simplified parallel processing - reliable and fast"""
+def create_mapping_dict(target_names: List[str], ref_names: List[str], 
+                       corrections: Dict[str, str], threshold: int = 80) -> Dict[str, Tuple[str, int]]:
+    """Create mapping dictionary for all unique names"""
     
     # Limit reference names for faster matching
     if len(ref_names) > 5000:
         ref_names = list(dict.fromkeys(ref_names))[:5000]
         st.info(f"🔧 Using top 5,000 reference names for optimal speed")
     
-    # Smaller batches for better progress
-    batch_size = min(1000, len(target_names) // 10)  # Dynamic batch size
-    batches = [target_names[i:i + batch_size] for i in range(0, len(target_names), batch_size)]
+    # Get unique names only for processing
+    unique_names = list(dict.fromkeys(target_names))
     
-    all_results = []
+    # Smaller batches for better progress
+    batch_size = min(1000, len(unique_names) // 10)
+    batches = [unique_names[i:i + batch_size] for i in range(0, len(unique_names), batch_size)]
+    
+    mapping_dict = {}
     progress_bar = st.progress(0)
     status = st.empty()
     
-    # Process batches sequentially first (to avoid threading issues)
     start_time = time.time()
+    processed_count = 0
     
     for i, batch in enumerate(batches):
         try:
-            # Process each batch
-            status.text(f"🔄 Processing batch {i+1}/{len(batches)} ({len(batch)} names)...")
+            status.text(f"🔄 Processing batch {i+1}/{len(batches)} ({len(batch)} unique names)...")
             
             batch_results = batch_fuzzy_match(batch, ref_names, corrections, threshold)
-            all_results.extend(batch_results)
+            
+            # Store in mapping dictionary
+            for original, mapped, confidence in batch_results:
+                # Convert mapped name to CAPITAL
+                if mapped != "⚠️ REVIEW REQUIRED":
+                    mapped = mapped.upper()
+                mapping_dict[original] = (mapped, confidence)
+            
+            processed_count += len(batch_results)
             
             # Update progress
             progress = int((i + 1) / len(batches) * 100)
@@ -188,24 +197,18 @@ def parallel_mapping(target_names: List[str], ref_names: List[str],
             
             # Show speed info
             elapsed = time.time() - start_time
-            rate = len(all_results) / elapsed if elapsed > 0 else 0
-            eta = (len(target_names) - len(all_results)) / rate if rate > 0 else 0
+            rate = processed_count / elapsed if elapsed > 0 else 0
+            eta = (len(unique_names) - processed_count) / rate if rate > 0 else 0
             
-            status.text(f"✅ Processed {len(all_results):,}/{len(target_names):,} | Speed: {rate:.0f}/sec | ETA: {eta:.0f}s")
+            status.text(f"✅ Processed {processed_count:,}/{len(unique_names):,} unique names | Speed: {rate:.0f}/sec | ETA: {eta:.0f}s")
             
         except Exception as e:
             logger.error(f"Error in batch {i}: {e}")
             status.error(f"Error in batch {i}: {str(e)}")
-            # Continue with next batch
             continue
     
-    status.success(f"🎉 Completed {len(all_results):,} names in {time.time() - start_time:.1f} seconds!")
-    
-    # Convert to DataFrame
-    if not all_results:
-        return pd.DataFrame(columns=["Original Name", "Mapped Name", "Confidence"])
-    
-    return pd.DataFrame(all_results, columns=["Original Name", "Mapped Name", "Confidence"])
+    status.success(f"🎉 Completed {processed_count:,} unique names in {time.time() - start_time:.1f} seconds!")
+    return mapping_dict
 
 # UI Header
 st.markdown(
@@ -226,6 +229,8 @@ with st.expander("ℹ️ How This App Works", expanded=False):
     st.markdown(
         """
         ### 🚀 Advanced Features:
+        - **Complete Dataset Output**: Preserves ALL rows and columns from your target file
+        - **Capital Letter Mapping**: All mapped names returned in CAPITAL letters
         - **Parquet Optimization**: Files converted to Parquet format for 10x faster processing
         - **Parallel Processing**: Multi-threaded fuzzy matching across CPU cores
         - **Memory Efficient**: Chunked processing for files up to 500MB
@@ -324,18 +329,29 @@ if ref_file and target_file:
                 ref_names, _ = preprocess_names(ref_names_raw)
                 target_names, target_mapping = preprocess_names(target_names_raw)
                 
-                # Remove duplicates while preserving order
+                # Remove duplicates from reference names only
                 ref_names = list(dict.fromkeys(ref_names))
-                target_names = list(dict.fromkeys(target_names))
                 
-                st.info(f"🧹 **After preprocessing:** Reference: {len(ref_names):,} unique | Target: {len(target_names):,} unique")
+                st.info(f"🧹 **After preprocessing:** Reference: {len(ref_names):,} unique | Target: {len(target_names):,} total rows")
                 
-                # Run parallel mapping
-                results_df = parallel_mapping(target_names, ref_names, corrections, threshold, max_workers)
+                # Create mapping dictionary for unique names
+                mapping_dict = create_mapping_dict(target_names, ref_names, corrections, threshold)
                 
-                # Map back to original names
-                results_df['Original Name'] = results_df['Original Name'].map(
-                    lambda x: target_mapping.get(x, x)
+                # Apply mapping to ALL rows in the target dataframe
+                target_df_result = target_df.copy()
+                
+                # Create mapped column
+                target_df_result['Mapped_Name'] = target_df_result[target_col].apply(
+                    lambda x: mapping_dict.get(str(x).lower().strip(), ("⚠️ REVIEW REQUIRED", 0))[0] 
+                    if pd.notna(x) and str(x).strip() != '' 
+                    else "⚠️ EMPTY VALUE"
+                )
+                
+                # Create confidence column
+                target_df_result['Confidence'] = target_df_result[target_col].apply(
+                    lambda x: mapping_dict.get(str(x).lower().strip(), ("⚠️ REVIEW REQUIRED", 0))[1] 
+                    if pd.notna(x) and str(x).strip() != '' 
+                    else 0
                 )
                 
                 # Force garbage collection
@@ -344,39 +360,51 @@ if ref_file and target_file:
             # Results display
             st.success("🎉 **Mapping Complete!**")
             
-            # Split results
-            high_conf = results_df[results_df["Confidence"] >= threshold]
-            low_conf = results_df[results_df["Confidence"] < threshold]
+            # Split results for analysis
+            high_conf_mask = target_df_result['Confidence'] >= threshold
+            high_conf_count = high_conf_mask.sum()
+            low_conf_count = len(target_df_result) - high_conf_count
             
             # Metrics
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("✅ High Confidence", f"{len(high_conf):,}")
+                st.metric("✅ High Confidence", f"{high_conf_count:,}")
             with col2:
-                st.metric("⚠️ Needs Review", f"{len(low_conf):,}")
+                st.metric("⚠️ Needs Review", f"{low_conf_count:,}")
             with col3:
-                st.metric("📊 Total Processed", f"{len(results_df):,}")
+                st.metric("📊 Total Rows", f"{len(target_df_result):,}")
             with col4:
-                accuracy = (len(high_conf) / len(results_df) * 100) if len(results_df) > 0 else 0
+                accuracy = (high_conf_count / len(target_df_result) * 100) if len(target_df_result) > 0 else 0
                 st.metric("🎯 Auto-Mapping Rate", f"{accuracy:.1f}%")
             
-            # High confidence results
-            st.subheader("✅ Auto-Mapped Results (High Confidence)")
-            if not high_conf.empty:
-                st.dataframe(high_conf, use_container_width=True, height=300)
-            else:
-                st.info("No high confidence matches found.")
+            # Show preview of results
+            st.subheader("📊 Complete Results Preview")
             
-            # Low confidence results for review
-            if not low_conf.empty:
+            # Display columns in order: Original columns + Mapped columns
+            display_columns = list(target_df.columns) + ['Mapped_Name', 'Confidence']
+            preview_df = target_df_result[display_columns]
+            
+            st.dataframe(preview_df.head(100), use_container_width=True, height=400)
+            st.info(f"Showing first 100 rows of {len(target_df_result):,} total rows")
+            
+            # Manual review section for low confidence only
+            if low_conf_count > 0:
                 st.subheader("⚠️ Manual Review Required")
-                st.warning(f"Please review {len(low_conf)} low confidence matches below:")
                 
-                edited_low_conf = st.data_editor(
-                    low_conf, 
-                    num_rows="dynamic", 
+                # Show only low confidence rows for editing
+                low_conf_rows = target_df_result[~high_conf_mask].copy()
+                
+                # Create simplified view for editing
+                edit_columns = [target_col, 'Mapped_Name', 'Confidence']
+                edit_df = low_conf_rows[edit_columns].head(50)  # Limit for performance
+                
+                st.warning(f"Showing first 50 of {low_conf_count:,} rows needing review. Edit the 'Mapped_Name' column below:")
+                
+                edited_df = st.data_editor(
+                    edit_df,
+                    num_rows="dynamic",
                     use_container_width=True,
-                    height=400,
+                    height=300,
                     column_config={
                         "Confidence": st.column_config.ProgressColumn(
                             "Confidence %",
@@ -384,52 +412,73 @@ if ref_file and target_file:
                             min_value=0,
                             max_value=100,
                         ),
+                        target_col: st.column_config.TextColumn(
+                            "Original Name",
+                            disabled=True,
+                            help="Original name from your file"
+                        ),
+                        "Mapped_Name": st.column_config.TextColumn(
+                            "Mapped Name",
+                            help="Edit this to correct the mapping"
+                        )
                     }
                 )
                 
-                # Update corrections
-                for _, row in edited_low_conf.iterrows():
-                    if (row["Mapped Name"] not in ["⚠️ REVIEW REQUIRED", ""] and 
-                        pd.notna(row["Mapped Name"])):
-                        corrections[row["Original Name"].lower().strip()] = row["Mapped Name"]
+                # Update corrections based on edits
+                for idx, row in edited_df.iterrows():
+                    original = row[target_col]
+                    mapped = row["Mapped_Name"]
+                    if (pd.notna(mapped) and mapped not in ["⚠️ REVIEW REQUIRED", ""] and 
+                        pd.notna(original)):
+                        corrections[str(original).lower().strip()] = str(mapped).upper()
                 
-                # Save corrections
+                # Save updated corrections
                 save_corrections(corrections, dict_hash)
                 
-                # Combine results
-                final_df = pd.concat([high_conf, edited_low_conf], ignore_index=True)
-            else:
-                final_df = high_conf
+                if st.button("🔄 Apply Manual Corrections", type="secondary"):
+                    st.rerun()
+            
+            # Final results
+            final_results = target_df_result
             
             # Download section
-            st.subheader("📥 Download Results")
+            st.subheader("📥 Download Complete Results")
             
             col1, col2, col3 = st.columns(3)
             
             with col1:
-                # CSV download
+                # CSV download - Full dataset
                 csv_buffer = io.StringIO()
-                final_df.to_csv(csv_buffer, index=False, encoding='utf-8')
+                final_results.to_csv(csv_buffer, index=False, encoding='utf-8')
                 st.download_button(
-                    "📄 Download CSV",
+                    "📄 Download Complete CSV",
                     csv_buffer.getvalue(),
-                    file_name=f"mapped_results_{int(time.time())}.csv",
+                    file_name=f"complete_mapped_results_{int(time.time())}.csv",
                     mime="text/csv",
-                    use_container_width=True
+                    use_container_width=True,
+                    help=f"Download all {len(final_results):,} rows with mapped names"
                 )
             
             with col2:
-                # Excel download
+                # Excel download - Full dataset
                 excel_buffer = io.BytesIO()
                 with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-                    final_df.to_excel(writer, index=False, sheet_name="Mapped Results")
+                    final_results.to_excel(writer, index=False, sheet_name="Complete Results")
+                    
+                    # Add summary sheet
+                    summary_data = {
+                        'Metric': ['Total Rows', 'High Confidence', 'Needs Review', 'Auto-Mapping Rate'],
+                        'Value': [len(final_results), high_conf_count, low_conf_count, f"{accuracy:.1f}%"]
+                    }
+                    pd.DataFrame(summary_data).to_excel(writer, index=False, sheet_name="Summary")
                 
                 st.download_button(
-                    "📊 Download Excel",
+                    "📊 Download Complete Excel",
                     excel_buffer.getvalue(),
-                    file_name=f"mapped_results_{int(time.time())}.xlsx",
+                    file_name=f"complete_mapped_results_{int(time.time())}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
+                    use_container_width=True,
+                    help=f"Download all {len(final_results):,} rows with summary sheet"
                 )
             
             with col3:
@@ -437,11 +486,12 @@ if ref_file and target_file:
                 dict_buffer = io.StringIO()
                 json.dump(corrections, dict_buffer, indent=2, ensure_ascii=False)
                 st.download_button(
-                    "📖 Download Dictionary",
+                    "📖 Download Updated Dictionary",
                     dict_buffer.getvalue(),
                     file_name=f"corrections_{int(time.time())}.json",
                     mime="application/json",
-                    use_container_width=True
+                    use_container_width=True,
+                    help="Download correction dictionary for future use"
                 )
 
     except NameMapperError as e:
@@ -470,12 +520,22 @@ else:
         
         **Target File (messy_names.csv):**
         ```
-        Company Name
-        APPLE INC
-        Microsoft Corp
-        Google
-        Amazon
-        Aple Inc.
+        ID,Company Name,Address,Phone
+        1,APPLE INC,Cupertino,555-0100
+        2,Microsoft Corp,Redmond,555-0200
+        3,Google,Mountain View,555-0300
+        4,Amazon,Seattle,555-0400
+        5,Aple Inc.,San Jose,555-0500
+        ```
+        
+        **Output will contain ALL columns plus mapped names:**
+        ```
+        ID,Company Name,Address,Phone,Mapped_Name,Confidence
+        1,APPLE INC,Cupertino,555-0100,APPLE INC.,95
+        2,Microsoft Corp,Redmond,555-0200,MICROSOFT CORPORATION,90
+        3,Google,Mountain View,555-0300,GOOGLE LLC,88
+        4,Amazon,Seattle,555-0400,AMAZON.COM INC.,92
+        5,Aple Inc.,San Jose,555-0500,APPLE INC.,85
         ```
         """)
 
@@ -484,9 +544,9 @@ st.markdown("---")
 st.markdown(
     """
     <div style="text-align: center; padding: 20px; color: #666;">
-        <h4>🚀 Match and Clean Names wth Precision</h4>
+        <h4>🚀 Match and Clean Names with Precision</h4>
         <p>Developed by <strong>CE Innovations Lab 2025</strong></p>
-        <p><em>Optimized for enterprise-scale data processing</em></p>
+        <p><em>Optimized for enterprise-scale data processing with complete dataset preservation</em></p>
     </div>
     """,
     unsafe_allow_html=True,
